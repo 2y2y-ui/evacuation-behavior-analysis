@@ -170,6 +170,10 @@ def interpolate(a: Point, b: Point, ratio: float) -> Point:
     )
 
 
+def point_lookup() -> dict[str, Point]:
+    return {point.name: point for point in [*HOME_ZONES, *HUBS, *SHELTERS]}
+
+
 def get_terrain_scenario(scenario_key: str = "standard") -> dict:
     return TERRAIN_SCENARIOS.get(scenario_key, TERRAIN_SCENARIOS["standard"])
 
@@ -377,16 +381,78 @@ def save_plots(movements: pd.DataFrame, features: pd.DataFrame, pca_df: pd.DataF
     fig.savefig(OUTPUT_DIR / "pca_clusters.png", dpi=160)
     plt.close(fig)
 
-    fig, ax = plt.subplots(figsize=(8, 6))
-    sample_users = movements["user_id"].drop_duplicates().sample(50, random_state=RANDOM_SEED)
-    for _, user_path in movements[movements["user_id"].isin(sample_users)].groupby("user_id"):
-        ax.plot(user_path["longitude"], user_path["latitude"], color="#4C78A8", alpha=0.18, linewidth=1)
-    ax.scatter([p.lon for p in SHELTERS], [p.lat for p in SHELTERS], marker="^", s=160, color="#E45756", label="shelter")
-    ax.scatter([p.lon for p in HOME_ZONES], [p.lat for p in HOME_ZONES], marker="o", s=70, color="#54A24B", label="home zone")
-    ax.set_title(f"Simulated Evacuation Routes: {terrain_label}")
+    fig, ax = plt.subplots(figsize=(10, 7))
+    points = point_lookup()
+    route_summary = (
+        features.groupby("route_id")
+        .agg(users=("user_id", "count"), avg_time_min=("evacuation_time_min", "mean"))
+        .sort_values("users", ascending=False)
+        .reset_index()
+    )
+    route_summary["rank"] = [f"R{i + 1}" for i in range(len(route_summary))]
+    max_users = max(route_summary["users"].max(), 1)
+    for _, row in route_summary.iterrows():
+        route_points = [points[name] for name in row["route_id"].split(" -> ") if name in points]
+        if len(route_points) < 2:
+            continue
+        intensity = row["users"] / max_users
+        color = plt.cm.YlOrRd(0.25 + 0.7 * intensity)
+        width = 1.6 + 7.0 * intensity
+        for start, end in zip(route_points[:-1], route_points[1:]):
+            ax.plot(
+                [start.lon, end.lon],
+                [start.lat, end.lat],
+                color=color,
+                linewidth=width,
+                alpha=0.72,
+                solid_capstyle="round",
+                zorder=1,
+            )
+        if row.name < 5:
+            mid = route_points[len(route_points) // 2]
+            ax.text(
+                mid.lon,
+                mid.lat + 0.0024 + (row.name % 2) * 0.0012,
+                f"{row['rank']}: {int(row['users'])}",
+                fontsize=8,
+                fontweight="bold",
+                color="#7f1d1d",
+                ha="center",
+                bbox={"boxstyle": "round,pad=0.24", "facecolor": "#fff7ed", "edgecolor": "#fed7aa", "alpha": 0.94},
+                zorder=5,
+            )
+
+    ax.scatter([p.lon for p in HOME_ZONES], [p.lat for p in HOME_ZONES], marker="o", s=90, color="#2F855A", label="home area", zorder=6)
+    ax.scatter([p.lon for p in HUBS], [p.lat for p in HUBS], marker="s", s=90, color="#4C78A8", label="route hub", zorder=6)
+    ax.scatter([p.lon for p in SHELTERS], [p.lat for p in SHELTERS], marker="^", s=190, color="#D62728", label="shelter", zorder=7)
+
+    for point in [*HOME_ZONES, *HUBS, *SHELTERS]:
+        ax.annotate(
+            point.name.replace("_", "\n"),
+            (point.lon, point.lat),
+            textcoords="offset points",
+            xytext=(0, 9),
+            ha="center",
+            fontsize=7,
+            color="#1f2937",
+            zorder=8,
+        )
+
+    ax.set_title(f"Evacuation Route Concentration: {terrain_label}")
     ax.set_xlabel("longitude")
     ax.set_ylabel("latitude")
-    ax.legend()
+    ax.legend(loc="upper left")
+    ax.text(
+        0.99,
+        0.02,
+        "Line width/color = number of evacuees on the route",
+        transform=ax.transAxes,
+        ha="right",
+        va="bottom",
+        fontsize=9,
+        color="#374151",
+        bbox={"boxstyle": "round,pad=0.35", "facecolor": "#f8fafc", "edgecolor": "#cbd5e1"},
+    )
     fig.tight_layout()
     fig.savefig(OUTPUT_DIR / "evacuation_map.png", dpi=160)
     plt.close(fig)

@@ -54,7 +54,7 @@ st.markdown(
 
 
 def route_summary(features: pd.DataFrame) -> pd.DataFrame:
-    return (
+    summary = (
         features.groupby("route_id")
         .agg(
             evacuees=("user_id", "count"),
@@ -65,6 +65,8 @@ def route_summary(features: pd.DataFrame) -> pd.DataFrame:
         .sort_values(["evacuees", "avg_time_min"], ascending=False)
         .reset_index()
     )
+    summary.insert(0, "rank", [f"R{i + 1}" for i in range(len(summary))])
+    return summary
 
 
 @st.cache_data(show_spinner=False)
@@ -172,8 +174,14 @@ with tabs[0]:
 
 with tabs[1]:
     st.subheader("仮想都市上の避難経路")
+    st.info("線が太く濃いほど、その経路に避難者が集中しています。丸は住宅エリア、四角は経由地点、三角は避難所です。図中のR1、R2は下のランキング表と対応します。")
     st.image(str(OUTPUT_DIR / "evacuation_map.png"), use_column_width=True)
-    st.caption("住宅エリアから避難所へ向かう経路をサンプル表示しています。")
+    st.caption("地形タイプを切り替えると、人が集中する場所や混雑しやすい経路が変わります。")
+    st.dataframe(
+        routes_df[["rank", "route_id", "evacuees", "avg_time_min"]].head(5),
+        use_container_width=True,
+        hide_index=True,
+    )
 
 with tabs[2]:
     st.subheader("K-means + PCA による避難行動クラスタ")
