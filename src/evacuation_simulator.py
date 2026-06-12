@@ -62,6 +62,64 @@ SHELTERS = [
     Point("shelter_city_hall", 35.6880, 139.7160),
 ]
 
+TERRAIN_SCENARIOS = {
+    "standard": {
+        "label": "標準の市街地",
+        "plot_label": "Standard Urban Area",
+        "description": "住宅地、駅前、川沿いがほどよく混在する基本ケースです。",
+        "zone_weights": [0.18, 0.17, 0.18, 0.16, 0.19, 0.12],
+        "route_bias": {},
+        "speed_factor": 1.0,
+        "congestion_strength": 0.32,
+        "delay_shift": 0.0,
+    },
+    "river_bridge": {
+        "label": "川と橋がある地域",
+        "plot_label": "River and Bridge Area",
+        "description": "川沿いの住民が橋に集中し、橋周辺で混雑しやすいケースです。",
+        "zone_weights": [0.12, 0.13, 0.12, 0.12, 0.16, 0.35],
+        "route_bias": {"river_side": "narrow_bridge"},
+        "speed_factor": 0.92,
+        "congestion_strength": 0.46,
+        "delay_shift": 2.0,
+    },
+    "station_crowd": {
+        "label": "駅前に人が集中する地域",
+        "plot_label": "Crowded Station Area",
+        "description": "駅前エリアからの避難者が多く、駅前広場に人が集まりやすいケースです。",
+        "zone_weights": [0.10, 0.11, 0.12, 0.10, 0.47, 0.10],
+        "route_bias": {"station_area": "station_plaza"},
+        "speed_factor": 0.96,
+        "congestion_strength": 0.42,
+        "delay_shift": 1.0,
+    },
+    "remote_shelter": {
+        "label": "避難所が遠い地域",
+        "plot_label": "Remote Shelter Area",
+        "description": "南側・西側の住宅地から避難所までの距離が長くなりやすいケースです。",
+        "zone_weights": [0.08, 0.10, 0.34, 0.30, 0.10, 0.08],
+        "route_bias": {"south_residential": "narrow_bridge", "west_residential": "main_road_crossing"},
+        "speed_factor": 0.94,
+        "congestion_strength": 0.34,
+        "delay_shift": 3.0,
+    },
+    "narrow_roads": {
+        "label": "道路が狭く混雑しやすい地域",
+        "plot_label": "Narrow Road Area",
+        "description": "複数エリアの避難者が同じ交差点に集中し、移動速度が落ちやすいケースです。",
+        "zone_weights": [0.18, 0.18, 0.17, 0.17, 0.18, 0.12],
+        "route_bias": {
+            "north_residential": "main_road_crossing",
+            "east_residential": "main_road_crossing",
+            "south_residential": "main_road_crossing",
+            "west_residential": "main_road_crossing",
+        },
+        "speed_factor": 0.86,
+        "congestion_strength": 0.55,
+        "delay_shift": 1.5,
+    },
+}
+
 
 def haversine_km(a: Point, b: Point) -> float:
     radius = 6371.0
@@ -83,7 +141,12 @@ def nearest_shelter(origin: Point) -> Point:
     return min(SHELTERS, key=lambda shelter: haversine_km(origin, shelter))
 
 
-def choose_route(origin: Point, shelter: Point, rng: random.Random) -> list[Point]:
+def choose_route(origin: Point, shelter: Point, rng: random.Random, scenario: dict | None = None) -> list[Point]:
+    route_bias = (scenario or {}).get("route_bias", {})
+    if origin.name in route_bias:
+        hub = next(point for point in HUBS if point.name == route_bias[origin.name])
+        return [origin, hub, shelter]
+
     if origin.name == "river_side":
         hub = next(point for point in HUBS if point.name == "narrow_bridge")
     elif origin.name in {"north_residential", "east_residential"}:
@@ -107,7 +170,12 @@ def interpolate(a: Point, b: Point, ratio: float) -> Point:
     )
 
 
-def simulate_movements(n_users: int = 300) -> tuple[pd.DataFrame, pd.DataFrame]:
+def get_terrain_scenario(scenario_key: str = "standard") -> dict:
+    return TERRAIN_SCENARIOS.get(scenario_key, TERRAIN_SCENARIOS["standard"])
+
+
+def simulate_movements(n_users: int = 300, scenario_key: str = "standard") -> tuple[pd.DataFrame, pd.DataFrame]:
+    scenario = get_terrain_scenario(scenario_key)
     rng = random.Random(RANDOM_SEED)
     np_rng = np.random.default_rng(RANDOM_SEED)
     start_time = pd.Timestamp("2026-04-10 08:00")
@@ -119,12 +187,12 @@ def simulate_movements(n_users: int = 300) -> tuple[pd.DataFrame, pd.DataFrame]:
     for idx in range(1, n_users + 1):
         zone = rng.choices(
             HOME_ZONES,
-            weights=[0.18, 0.17, 0.18, 0.16, 0.19, 0.12],
+            weights=scenario["zone_weights"],
             k=1,
         )[0]
         origin = jitter(zone, rng)
         shelter = nearest_shelter(origin)
-        path = choose_route(origin, shelter, rng)
+        path = choose_route(origin, shelter, rng, scenario)
         route_id = " -> ".join(point.name for point in path)
         route_counts[route_id] = route_counts.get(route_id, 0) + 1
         user_plans.append((idx, zone, origin, shelter, path, route_id))
@@ -133,7 +201,7 @@ def simulate_movements(n_users: int = 300) -> tuple[pd.DataFrame, pd.DataFrame]:
     for idx, zone, origin, shelter, path, route_id in user_plans:
         user_id = f"U{idx:03d}"
         vulnerable = int(rng.random() < 0.22)
-        departure_delay = max(0, np_rng.normal(18, 12))
+        departure_delay = max(0, np_rng.normal(18 + scenario["delay_shift"], 12))
         if vulnerable:
             departure_delay += np_rng.uniform(6, 20)
 
@@ -142,11 +210,11 @@ def simulate_movements(n_users: int = 300) -> tuple[pd.DataFrame, pd.DataFrame]:
             base_speed -= np_rng.uniform(0.8, 1.4)
 
         route_congestion = route_counts[route_id] / max_route_count
-        congestion_penalty = 1.0 - 0.32 * route_congestion
-        walking_speed = max(1.4, base_speed * congestion_penalty)
+        congestion_penalty = 1.0 - scenario["congestion_strength"] * route_congestion
+        walking_speed = max(1.4, base_speed * congestion_penalty * scenario["speed_factor"])
         total_distance = path_distance_km(path)
         evac_time = (total_distance / walking_speed) * 60
-        evac_time += route_congestion * 12 + np_rng.normal(0, 3)
+        evac_time += route_congestion * 12 * (scenario["congestion_strength"] / 0.32) + np_rng.normal(0, 3)
         evac_time = max(5, evac_time)
 
         depart_at = start_time + pd.Timedelta(minutes=float(departure_delay))
@@ -165,6 +233,8 @@ def simulate_movements(n_users: int = 300) -> tuple[pd.DataFrame, pd.DataFrame]:
                 "route_id": route_id,
                 "zone": zone.name,
                 "shelter_id": shelter.name,
+                "terrain_type": scenario["label"],
+                "terrain_plot_label": scenario["plot_label"],
             }
         )
 
@@ -189,6 +259,8 @@ def simulate_movements(n_users: int = 300) -> tuple[pd.DataFrame, pd.DataFrame]:
                     "route_id": route_id,
                     "zone": zone.name,
                     "shelter_id": shelter.name,
+                    "terrain_type": scenario["label"],
+                    "terrain_plot_label": scenario["plot_label"],
                 }
             )
 
@@ -205,6 +277,8 @@ def simulate_movements(n_users: int = 300) -> tuple[pd.DataFrame, pd.DataFrame]:
                 "route_id": route_id,
                 "zone": zone.name,
                 "shelter_id": shelter.name,
+                "terrain_type": scenario["label"],
+                "terrain_plot_label": scenario["plot_label"],
             }
         )
 
@@ -220,6 +294,8 @@ def simulate_movements(n_users: int = 300) -> tuple[pd.DataFrame, pd.DataFrame]:
                 "route_congestion": round(float(route_congestion), 3),
                 "vulnerable": vulnerable,
                 "evacuation_time_min": round(float(evac_time), 2),
+                "terrain_type": scenario["label"],
+                "terrain_plot_label": scenario["plot_label"],
             }
         )
 
@@ -289,6 +365,7 @@ def analyze(features: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, dict]:
 
 def save_plots(movements: pd.DataFrame, features: pd.DataFrame, pca_df: pd.DataFrame, prediction_df: pd.DataFrame) -> None:
     plt.style.use("seaborn-v0_8-whitegrid")
+    terrain_label = movements["terrain_plot_label"].iloc[0] if "terrain_plot_label" in movements else "Standard"
 
     fig, ax = plt.subplots(figsize=(8, 6))
     scatter = ax.scatter(pca_df["pc1"], pca_df["pc2"], c=pca_df["cluster"], cmap="tab10", alpha=0.78)
@@ -306,7 +383,7 @@ def save_plots(movements: pd.DataFrame, features: pd.DataFrame, pca_df: pd.DataF
         ax.plot(user_path["longitude"], user_path["latitude"], color="#4C78A8", alpha=0.18, linewidth=1)
     ax.scatter([p.lon for p in SHELTERS], [p.lat for p in SHELTERS], marker="^", s=160, color="#E45756", label="shelter")
     ax.scatter([p.lon for p in HOME_ZONES], [p.lat for p in HOME_ZONES], marker="o", s=70, color="#54A24B", label="home zone")
-    ax.set_title("Simulated Evacuation Routes")
+    ax.set_title(f"Simulated Evacuation Routes: {terrain_label}")
     ax.set_xlabel("longitude")
     ax.set_ylabel("latitude")
     ax.legend()

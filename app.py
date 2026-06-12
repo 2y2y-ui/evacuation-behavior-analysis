@@ -5,7 +5,15 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 
-from src.evacuation_simulator import DATA_DIR, OUTPUT_DIR, analyze, save_plots, simulate_movements
+from src.evacuation_simulator import (
+    DATA_DIR,
+    OUTPUT_DIR,
+    TERRAIN_SCENARIOS,
+    analyze,
+    get_terrain_scenario,
+    save_plots,
+    simulate_movements,
+)
 
 
 APP_ROOT = Path(__file__).resolve().parent
@@ -60,11 +68,13 @@ def route_summary(features: pd.DataFrame) -> pd.DataFrame:
 
 
 @st.cache_data(show_spinner=False)
-def run_analysis(n_users: int) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, dict, pd.DataFrame]:
+def run_analysis(
+    n_users: int, scenario_key: str
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, dict, pd.DataFrame]:
     DATA_DIR.mkdir(exist_ok=True)
     OUTPUT_DIR.mkdir(exist_ok=True)
 
-    movements, features = simulate_movements(n_users=n_users)
+    movements, features = simulate_movements(n_users=n_users, scenario_key=scenario_key)
     features, pca_df, result = analyze(features)
     prediction_df = result["prediction_df"]
     metrics = result["metrics"]
@@ -91,8 +101,13 @@ def dataframe_download(label: str, data: pd.DataFrame, filename: str) -> None:
 
 with st.sidebar:
     st.header("分析設定")
+    scenario_options = {value["label"]: key for key, value in TERRAIN_SCENARIOS.items()}
+    scenario_label = st.selectbox("地形タイプ", list(scenario_options.keys()))
+    scenario_key = scenario_options[scenario_label]
+    scenario = get_terrain_scenario(scenario_key)
+    st.caption(scenario["description"])
     n_users = st.slider("避難者数", min_value=80, max_value=600, value=300, step=20)
-    st.caption("避難者数を変更すると、仮想都市の移動ログと分析結果を再生成します。")
+    st.caption("地形タイプや避難者数を変更すると、仮想都市の移動ログと分析結果を再生成します。")
     run_clicked = st.button("分析を実行", type="primary", use_container_width=True)
 
     st.divider()
@@ -108,7 +123,7 @@ st.markdown(
     """
     <p class="section-note">
     災害時の移動データを想定し、避難遅延リスクと混雑経路を可視化する分析ダッシュボードです。
-    実際のGPSログは使わず、シミュレーションデータを生成してAI分析を行います。
+    地形タイプを切り替えることで、橋、駅前、狭い道路などの条件が避難結果に与える影響を比較できます。
     </p>
     """,
     unsafe_allow_html=True,
@@ -118,14 +133,14 @@ if run_clicked:
     st.cache_data.clear()
 
 with st.spinner("避難行動データを生成し、AI分析を実行しています..."):
-    movements_df, features_df, pca_df, prediction_df, metrics, routes_df = run_analysis(n_users)
+    movements_df, features_df, pca_df, prediction_df, metrics, routes_df = run_analysis(n_users, scenario_key)
 
 delay_count = int(features_df["delay_risk"].sum())
 mean_time = float(features_df["evacuation_time_min"].mean())
 top_route = routes_df.iloc[0]
 
 kpi_cols = st.columns(4)
-kpi_cols[0].metric("避難者数", f"{len(features_df):,}人")
+kpi_cols[0].metric("地形タイプ", scenario["label"])
 kpi_cols[1].metric("平均避難時間", f"{mean_time:.1f}分")
 kpi_cols[2].metric("遅延リスク人数", f"{delay_count:,}人")
 kpi_cols[3].metric("予測誤差", f"{metrics['linear_regression_mae_min']:.2f}分")
@@ -136,6 +151,7 @@ with tabs[0]:
     left, right = st.columns([1.1, 0.9])
     with left:
         st.subheader("分析結果サマリー")
+        st.info(f"現在の地形タイプ: {scenario['label']}。{scenario['description']}")
         st.dataframe(
             pd.DataFrame(
                 [
