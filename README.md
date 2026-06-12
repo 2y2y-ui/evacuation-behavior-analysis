@@ -32,8 +32,16 @@ pip install -r requirements.txt
 
 ## 実行方法
 
+コマンドラインで分析を実行する場合:
+
 ```bash
 python3 src/evacuation_simulator.py
+```
+
+StreamlitのWebアプリとして起動する場合:
+
+```bash
+streamlit run app.py
 ```
 
 実行すると、ローカル環境の `data/` と `outputs/` にCSVと図が生成されます。生成物は再現可能なため、リポジトリには含めません。
